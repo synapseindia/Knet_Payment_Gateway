@@ -1,0 +1,291 @@
+<?php
+
+/**
+ * @file
+ * Implements PayPal Chained Payments in Drupal Commerce checkout.
+ */
+
+/**
+ * Implements hook_commerce_payment_method_info().
+ */
+function knet_payment_gateway_commerce_payment_method_info() {
+  $payment_methods = array();
+
+  $payment_methods['knet_payment'] = array(
+    'base' => 'knet_payment_gateway',
+    'title' => t('KNET Payment'),
+    'short_title' => t('KNET'),
+    'description' => t('KNET Website Payments Standard'),
+    'terminal' => FALSE,
+    'offsite' => TRUE,
+    'offsite_autoredirect' => TRUE,
+  );
+
+  return $payment_methods;
+}
+
+/**
+ * Implements hook_entity_info_alter().
+ */
+function knet_payment_gateway_entity_info_alter(&$entity_info) {
+  // Alter the commerce_payment_transaction entity info to make it fieldable
+  $entity_info['commerce_payment_transaction']['fieldable'] = TRUE;
+}
+
+/**
+ * Implements hook_menu().
+ 
+function knet_payment_gateway_menu() {
+  $items = array();
+
+  // Define an additional IPN path that is specific to our payment method /
+  // instance.
+  $items['knet/paymant/ipn'] = array(
+    'page callback' => 'knet_payment_gateway_process_ipn',
+    'page arguments' => array(),
+    'access callback' => TRUE,
+    'type' => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+*/
+/**
+ * Returns the default settings for the PayPal Chained payment method.
+ */
+function knet_payment_gateway_default_settings() {
+  //$default_currency = commerce_default_currency();
+  return array(
+    'application_id' => '',
+    'api_username' => '',
+    'api_password' => '',
+    'api_signature' => '',
+    'currency_code' => 'USD',
+    'allow_supported_currencies' => FALSE,
+    'language' => 'US',
+    'server' => 'sandbox',
+    'ipn_logging' => 'notification',
+    'ipn_create_billing_profile' => FALSE,
+    'show_payment_instructions' => FALSE,
+    'pay_chain' => array(
+      'primary_receiver' => array(
+        'primary_receiver_percentage' => '100.00',
+        'primary_receiver_email' => '',
+      ),
+      'secondary_receivers' => array(
+        'secondary_receiver_0' => array(
+          'secondary_receiver_0_percentage' => '',
+          'secondary_receiver_0_email' => '',
+        ),
+        'secondary_receiver_1' => array(
+          'secondary_receiver_1_percentage' => '',
+          'secondary_receiver_1_email' => '',
+        ),
+        'secondary_receiver_2' => array(
+          'secondary_receiver_2_percentage' => '',
+          'secondary_receiver_2_email' => '',
+        ),
+        'secondary_receiver_3' => array(
+          'secondary_receiver_3_percentage' => '',
+          'secondary_receiver_3_email' => '',
+        )
+      ),
+    ),
+  );
+}
+
+/**
+ * Payment method callback: settings form.
+ */
+function knet_payment_gateway_settings_form($settings = array()) {
+module_load_include('inc', 'knet_payment_gateway', 'includes/knet_payment_gateway.debit_card');
+  $form = array();
+
+  // Merge default settings into the stored settings array.
+  $settings = (array) $settings + knet_payment_gateway_default_settings();
+
+  $form['application_id'] = array(
+    '#type' => 'textfield',
+    '#title' => t('KNET application id'),
+    '#description' => t('Your KNET application\'s identification, issued by KNET.'),
+    '#default_value' => $settings['application_id'],
+    //'#required' => TRUE,
+  );
+  $form['api_username'] = array(
+    '#type' => 'textfield',
+    '#title' => t('KNET API username'),
+    '#description' => t('Your KNET API username.'),
+    '#default_value' => $settings['api_username'],
+    //'#required' => TRUE,
+  );
+  $form['api_password'] = array(
+    '#type' => 'textfield',
+    '#title' => t('KNET API password'),
+    '#description' => t('Your KNET API password.'),
+    '#default_value' => $settings['api_password'],
+    //'#required' => TRUE,
+  );
+  $form['api_signature'] = array(
+    '#type' => 'textfield',
+    '#title' => t('KNET API signature'),
+    '#description' => t('Your KNET API signature.'),
+    '#default_value' => $settings['api_signature'],
+    //'#required' => TRUE,
+  );
+  if(isset($settings['card_types'])){
+	$saved_card_type = $settings['card_types'];
+  }else{
+	$saved_card_type = '';
+  }
+  $form['card_types'] = array(
+    '#type' => 'checkboxes',
+    '#title' => t('Limit accepted credit cards to the following types'),
+    '#description' => t('American Express is not available in the UK. Only MasterCard and Visa are available in Canada. If you enable Maestro or Solo, you must use GBP as your currency code.'),
+    '#options' => array_intersect_key(knet_payment_gateway_debit_card_types(), drupal_map_assoc(array('visa', 'mastercard', 'amex', 'discover', 'maestro', 'solo'))),
+    '#default_value' => $saved_card_type,
+    '#required' => TRUE,
+  );
+  $form['code'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Require the card security code (i.e. CVV) to process credit card transactions.'),
+    '#description' => t('This should match the similar setting in your PayPal account.'),
+    '#default_value' => $settings['code'],
+  );
+   $form['owner'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Require the card holder name to process credit card transactions.'),
+    '#description' => t('This should be the name on the debit card'),
+    '#default_value' => $settings['owner'],
+  );
+  $form['currency_code'] = array(
+    '#type' => 'select',
+    '#title' => t('Default currency'),
+    '#description' => t('Transactions in other currencies will be converted to this currency, so multi-currency sites must be configured to use appropriate conversion rates.'),
+    '#options' => knet_payment_gateway_currencies(),
+    '#default_value' => $settings['currency_code'],
+  );
+  $form['allow_supported_currencies'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Allow transactions to use any currency in the options list above.'),
+    '#description' => t('Transactions in unsupported currencies will still be converted into the default currency.'),
+    '#default_value' => $settings['allow_supported_currencies'],
+  );
+  $form['language'] = array(
+    '#type' => 'select',
+    '#title' => t('KNET login page language / locale'),
+    '#options' => knet_payment_gateway_languages(),
+    '#default_value' => $settings['language'],
+  );
+  
+  // If token is installed, this paychain is token-enabled
+  if (module_exists('token')) {
+    $form['pay_chain']['tokens'] = array(
+      '#theme' => 'token_tree',
+      '#token_types' => array('commerce-order'),
+    );
+  }
+  return $form;
+}
+
+/**
+ * Payment method callback: adds a message to the submission form if enabled in
+ * the payment method settings.
+ */
+function knet_payment_gateway_submit_form($payment_method, $pane_values, $checkout_pane, $order) {
+   module_load_include('inc', 'knet_payment_gateway', 'includes/knet_payment_gateway.debit_card');
+  $payment_method['settings'] += knet_payment_gateway_default_settings();
+
+  // Prepare the fields to include on the credit card form.
+  $fields = array();
+
+  // Include the card security code field if specified.
+  if ($payment_method['settings']['code']) {
+    $fields['code'] = '';
+  }
+  
+  // Include the owner name field if specified.
+  if ($payment_method['settings']['owner']) {
+    $fields['owner'] = '';
+  }
+
+  // Add the credit card types array if necessary.
+  $card_types = array_diff(array_values($payment_method['settings']['card_types']), array(0));
+
+  if (!empty($card_types)) {
+    $fields['type'] = $card_types;
+  }
+
+  // Add the start date and issue number if processing a Maestro or Solo card.
+  if (in_array('maestro', $card_types) || in_array('solo', $card_types)) {
+    $fields += array(
+      'start_month' => '',
+      'start_year' => '',
+      'issue' => '',
+    );
+  }
+
+  return knet_payment_gateway_debit_card_form($fields);
+}
+/**
+ * Returns an array of all possible language codes.
+ */
+function knet_payment_gateway_languages() {
+  return array(
+    t('By country') => array(
+      'AU' => t('Australia'),
+      'AT' => t('Austria'),
+      'BE' => t('Belgium'),
+      'BR' => t('Brazil'),
+      'CA' => t('Canada'),
+      'CN' => t('China'),
+      'FR' => t('France'),
+      'DE' => t('Germany'),
+      'IT' => t('Italy'),
+      'NL' => t('Netherlands'),
+      'PL' => t('Poland'),
+      'PT' => t('Portugal'),
+      'RU' => t('Russia'),
+      'ES' => t('Spain'),
+      'CH' => t('Switzerland'),
+      'GB' => t('United Kingdom'),
+      'US' => t('United States'),
+    ),
+    t('By language') => array(
+      'da_DK' => t('Danish (for Denmark only)'),
+      'he_IL' => t('Hebrew (for all)'),
+      'id_ID' => t('Indonesian (for Indonesia only)'),
+      'jp_JP' => t('Japanese (for Japan only)'),
+      'no_NO' => t('Norwegian (for Norway only)'),
+      'pt_BR' => t('Brazilian Portuguese (for Portugal and Brazil only)'),
+      'ru_RU' => t('Russian (for Lithuania, Latvia, and Ukraine only)'),
+      'sv_SE' => t('Swedish (for Sweden only)'),
+      'th_TH' => t('Thai (for Thailand only)'),
+      'tr_TR' => t('Turkish (for Turkey only)'),
+      'zh_CN' => t('Simplified Chinese (for China only)'),
+      'zh_HK' => t('Traditional Chinese (for Hong Kong only)'),
+      'zh_TW' => t('Traditional Chinese (for Taiwan only)'),
+    ),
+  );
+}
+
+/**
+ * Returns an array of all possible currency codes for the PayPal Chained
+ * payment method.
+ *
+ * @return
+ *   An associative array of currency codes with keys and values being the
+ *   currency codes accepted by the PayPal Chained payment method.
+ */
+function knet_payment_gateway_currencies() {
+  return drupal_map_assoc(array('AUD', 'BRL', 'CAD', 'CHF', 'CZK', 'DKK', 'EUR', 'GBP', 'HKD', 'HUF', 'ILS', 'JPY', 'MXN', 'MYR', 'NOK', 'NZD', 'PHP', 'PLN', 'SEK', 'SGD', 'THB', 'TRY', 'TWD', 'USD'));
+}
+
+/**
+ * Implements hook_views_api().
+ */
+function knet_payment_gateway_views_api() {
+  return array(
+    'api' => 3,
+    'path' => drupal_get_path('module', 'knet_payment_gateway') . '/includes/views',
+  );
+}
